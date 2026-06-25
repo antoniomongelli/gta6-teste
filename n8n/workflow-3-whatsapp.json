@@ -1,0 +1,336 @@
+{
+  "name": "GTA6.NEWS — 3. Dispatcher WhatsApp",
+  "nodes": [
+    {
+      "id": "schedule-trigger",
+      "name": "A cada 5 minutos",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 300],
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "minutes", "minutesInterval": 5 }]
+        }
+      }
+    },
+    {
+      "id": "buscar-jobs-whatsapp",
+      "name": "Buscar jobs WhatsApp pendentes",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [220, 300],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $vars.SUPABASE_URL }}/rest/v1/agent_jobs",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $vars.SUPABASE_SERVICE_KEY }}" }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "select", "value": "*" },
+            { "name": "tipo", "value": "eq.whatsapp" },
+            { "name": "status", "value": "eq.pendente" },
+            { "name": "agendado_para", "value": "lte.{{ new Date().toISOString() }}" },
+            { "name": "order", "value": "agendado_para.asc" },
+            { "name": "limit", "value": "3" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "tem-jobs",
+      "name": "Tem jobs para enviar?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [440, 300],
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json.length }}",
+              "rightValue": 0,
+              "operator": { "type": "number", "operation": "larger" }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "loop-jobs",
+      "name": "Loop por job",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [660, 200],
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      }
+    },
+    {
+      "id": "marcar-processando",
+      "name": "Marcar job como processando",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [880, 200],
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $vars.SUPABASE_URL }}/rest/v1/agent_jobs",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "id", "value": "=eq.{{ $json.id }}" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={ \"status\": \"processando\", \"iniciado_em\": \"{{ new Date().toISOString() }}\", \"tentativas\": {{ ($json.tentativas || 0) + 1 }} }"
+      }
+    },
+    {
+      "id": "formatar-mensagem",
+      "name": "Formatar mensagem WhatsApp",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1100, 200],
+      "parameters": {
+        "jsCode": "const job = $('loop-jobs').item.json;\nconst payload = job.payload;\n\nconst emojis = {\n  oficial:  '✅',\n  leak:     '🕵️',\n  rumor:    '❓',\n  trailer:  '🎬',\n  analise:  '🔍',\n  online:   '🎮',\n  breaking: '🔴'\n};\n\nconst emoji = emojis[payload.categoria] || '📰';\nconst siteUrl = process.env.SITE_URL || 'https://gta6.news';\n\n// Mensagem principal para o grupo\nconst mensagem = [\n  `${emoji} *${payload.titulo}*`,\n  '',\n  `🤖 _${payload.resumo_ia}_`,\n  '',\n  `🔗 ${siteUrl}/noticias/${payload.slug}`,\n  '',\n  '_GTA6.NEWS — Atualizado em tempo real_'\n].join('\\n');\n\n// Mensagem curta para status/story\nconst mensagemCurta = `${emoji} *GTA6 News*\\n${payload.titulo?.slice(0, 60)}...\\n\\n${siteUrl}/noticias/${payload.slug}`;\n\nreturn [{ json: {\n  job_id:         job.id,\n  noticia_id:     payload.noticia_id,\n  mensagem,\n  mensagem_curta: mensagemCurta,\n  categoria:      payload.categoria,\n  titulo:         payload.titulo,\n  slug:           payload.slug\n}}];"
+      }
+    },
+    {
+      "id": "buscar-grupos",
+      "name": "Buscar grupos ativos",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1320, 200],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $vars.UAZAPI_URL }}/group/list",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "token", "value": "={{ $vars.UAZAPI_TOKEN }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "filtrar-grupos-gta",
+      "name": "Filtrar grupos GTA6",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1540, 200],
+      "parameters": {
+        "jsCode": "// Pega todos os grupos e filtra os relacionados ao GTA6\nconst grupos = Array.isArray($input.item.json) ? $input.item.json : \n               ($input.item.json?.groups || $input.item.json?.data || []);\n\n// Filtrar pelo nome do grupo configurado ou usar todos\nconst nomeGrupo = $vars.WHATSAPP_GRUPO_NOME || 'GTA';\n\nconst gruposFiltrados = grupos.filter(g => {\n  const nome = (g.name || g.subject || '').toLowerCase();\n  return nome.includes(nomeGrupo.toLowerCase());\n});\n\n// Se não achou nenhum pelo nome, usar o ID hardcoded\nconst gruposFinais = gruposFiltrados.length > 0 ? gruposFiltrados : \n                    [{ id: $vars.WHATSAPP_GRUPO_ID, name: 'Grupo GTA6' }];\n\nconst msg    = $('formatar-mensagem').item.json;\nconst job_id = msg.job_id;\n\nreturn gruposFinais.map(g => ({\n  json: {\n    grupo_id:   g.id || g.remoteJid,\n    grupo_nome: g.name || g.subject,\n    mensagem:   msg.mensagem,\n    noticia_id: msg.noticia_id,\n    job_id:     msg.job_id\n  }\n}));"
+      }
+    },
+    {
+      "id": "enviar-whatsapp",
+      "name": "Enviar mensagem no grupo",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1760, 200],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $vars.UAZAPI_URL }}/message/sendText",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "token", "value": "={{ $vars.UAZAPI_TOKEN }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={\n  \"number\": \"{{ $json.grupo_id }}\",\n  \"text\":   {{ JSON.stringify($json.mensagem) }},\n  \"delay\":  1000\n}",
+        "options": { "timeout": 15000 }
+      }
+    },
+    {
+      "id": "registrar-envio",
+      "name": "Registrar envio no Supabase",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1980, 200],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $vars.SUPABASE_URL }}/rest/v1/whatsapp_envios",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={\n  \"noticia_id\":   \"{{ $('filtrar-grupos-gta').item.json.noticia_id }}\",\n  \"canal\":        \"grupo_principal\",\n  \"numero_grupo\": \"{{ $('filtrar-grupos-gta').item.json.grupo_id }}\",\n  \"mensagem\":     {{ JSON.stringify($('filtrar-grupos-gta').item.json.mensagem) }},\n  \"status\":       \"enviado\",\n  \"enviado_em\":   \"{{ new Date().toISOString() }}\"\n}"
+      }
+    },
+    {
+      "id": "marcar-noticia-enviada",
+      "name": "Marcar notícia como enviada",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2200, 200],
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $vars.SUPABASE_URL }}/rest/v1/noticias",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "id", "value": "=eq.{{ $('filtrar-grupos-gta').item.json.noticia_id }}" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={ \"whatsapp_enviado\": true, \"whatsapp_enviado_em\": \"{{ new Date().toISOString() }}\" }"
+      }
+    },
+    {
+      "id": "fechar-job",
+      "name": "Fechar job como concluído",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2420, 200],
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $vars.SUPABASE_URL }}/rest/v1/agent_jobs",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "id", "value": "=eq.{{ $('loop-jobs').item.json.id }}" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={ \"status\": \"concluido\", \"concluido_em\": \"{{ new Date().toISOString() }}\", \"resultado\": { \"grupos_enviados\": 1 } }"
+      }
+    },
+    {
+      "id": "log-enviado",
+      "name": "Log: WhatsApp enviado",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2640, 200],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $vars.SUPABASE_URL }}/rest/v1/agent_logs",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={ \"nivel\": \"info\", \"mensagem\": \"📱 WhatsApp enviado: {{ $('formatar-mensagem').item.json.titulo?.slice(0,60) }}\", \"dados\": { \"grupo\": \"{{ $('filtrar-grupos-gta').item.json.grupo_nome }}\", \"noticia_id\": \"{{ $('filtrar-grupos-gta').item.json.noticia_id }}\" } }"
+      }
+    },
+    {
+      "id": "continuar-loop",
+      "name": "Mais jobs?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2860, 200],
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $('loop-jobs').context.noItemsLeft }}",
+              "rightValue": false,
+              "operator": { "type": "boolean", "operation": "false" }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "A cada 5 minutos": {
+      "main": [[{ "node": "Buscar jobs WhatsApp pendentes", "type": "main", "index": 0 }]]
+    },
+    "Buscar jobs WhatsApp pendentes": {
+      "main": [[{ "node": "Tem jobs para enviar?", "type": "main", "index": 0 }]]
+    },
+    "Tem jobs para enviar?": {
+      "main": [
+        [{ "node": "Loop por job", "type": "main", "index": 0 }],
+        []
+      ]
+    },
+    "Loop por job": {
+      "main": [[{ "node": "Marcar job como processando", "type": "main", "index": 0 }]]
+    },
+    "Marcar job como processando": {
+      "main": [[{ "node": "Formatar mensagem WhatsApp", "type": "main", "index": 0 }]]
+    },
+    "Formatar mensagem WhatsApp": {
+      "main": [[{ "node": "Buscar grupos ativos", "type": "main", "index": 0 }]]
+    },
+    "Buscar grupos ativos": {
+      "main": [[{ "node": "Filtrar grupos GTA6", "type": "main", "index": 0 }]]
+    },
+    "Filtrar grupos GTA6": {
+      "main": [[{ "node": "Enviar mensagem no grupo", "type": "main", "index": 0 }]]
+    },
+    "Enviar mensagem no grupo": {
+      "main": [[{ "node": "Registrar envio no Supabase", "type": "main", "index": 0 }]]
+    },
+    "Registrar envio no Supabase": {
+      "main": [[{ "node": "Marcar notícia como enviada", "type": "main", "index": 0 }]]
+    },
+    "Marcar notícia como enviada": {
+      "main": [[{ "node": "Fechar job como concluído", "type": "main", "index": 0 }]]
+    },
+    "Fechar job como concluído": {
+      "main": [[{ "node": "Log: WhatsApp enviado", "type": "main", "index": 0 }]]
+    },
+    "Log: WhatsApp enviado": {
+      "main": [[{ "node": "Mais jobs?", "type": "main", "index": 0 }]]
+    },
+    "Mais jobs?": {
+      "main": [
+        [{ "node": "Loop por job", "type": "main", "index": 0 }],
+        []
+      ]
+    }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1", "saveManualExecutions": true },
+  "tags": [{ "name": "gta6news" }, { "name": "whatsapp" }]
+}

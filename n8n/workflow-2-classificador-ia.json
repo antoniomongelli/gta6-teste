@@ -1,0 +1,414 @@
+{
+  "name": "GTA6.NEWS — 2. Classificador IA (Claude)",
+  "nodes": [
+    {
+      "id": "schedule-trigger",
+      "name": "A cada 15 minutos",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 300],
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "minutes", "minutesInterval": 15 }]
+        }
+      }
+    },
+    {
+      "id": "verificar-agente-ativo",
+      "name": "Agente ativo?",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [220, 300],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $vars.SUPABASE_URL }}/rest/v1/configuracoes",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $vars.SUPABASE_SERVICE_KEY }}" }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "select", "value": "chave,valor" },
+            { "name": "chave", "value": "eq.agente_ativo" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "chk-ativo",
+      "name": "Está ativo?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [440, 300],
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json[0]?.valor }}",
+              "rightValue": "true",
+              "operator": { "type": "string", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "buscar-nao-classificados",
+      "name": "Buscar itens não classificados",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [660, 200],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $vars.SUPABASE_URL }}/rest/v1/agent_itens_coletados",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $vars.SUPABASE_SERVICE_KEY }}" }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "select", "value": "id,fonte_id,titulo_original,conteudo_original,url_original,hash" },
+            { "name": "relevante", "value": "is.null" },
+            { "name": "publicado", "value": "eq.false" },
+            { "name": "order", "value": "coletado_em.asc" },
+            { "name": "limit", "value": "5" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "tem-itens",
+      "name": "Tem itens para processar?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [880, 200],
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json.length }}",
+              "rightValue": 0,
+              "operator": { "type": "number", "operation": "larger" }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "loop-itens",
+      "name": "Loop por item",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [1100, 200],
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      }
+    },
+    {
+      "id": "claude-classificar",
+      "name": "Claude: Classificar relevância",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1320, 200],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "x-api-key", "value": "={{ $vars.ANTHROPIC_API_KEY }}" },
+            { "name": "anthropic-version", "value": "2023-06-01" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={\n  \"model\": \"claude-sonnet-4-6\",\n  \"max_tokens\": 2000,\n  \"system\": \"Você é um editor especialista em GTA 6 e Rockstar Games. Sua função é avaliar notícias em INGLÊS e decidir se são relevantes para um site de notícias sobre GTA VI em português do Brasil.\\n\\nRegras de relevância:\\n- RELEVANTE (score > 0.6): qualquer notícia sobre GTA 6, Rockstar Games, vice city, protagonistas Lucia/Jason, mapa Leonida, data de lançamento, trailers, leaks confirmados, GTA Online, pré-venda\\n- NÃO RELEVANTE (score < 0.4): notícias sobre outros jogos, memes sem informação, conteúdo repetido, spam\\n\\nCATEGORIAS POSSÍVEIS: oficial, leak, rumor, trailer, analise, online, breaking\\n\\nResponda SEMPRE em JSON puro sem markdown:\\n{\\n  \\\"relevante\\\": true/false,\\n  \\\"score\\\": 0.0-1.0,\\n  \\\"categoria\\\": \\\"categoria\\\",\\n  \\\"motivo_rejeicao\\\": \\\"motivo se não relevante ou null\\\",\\n  \\\"titulo_pt\\\": \\\"título traduzido e otimizado em PT-BR\\\",\\n  \\\"resumo_pt\\\": \\\"resumo de 1-2 frases em PT-BR\\\",\\n  \\\"resumo_ia\\\": \\\"resumo ultra-curto de 1 frase para o site (máx 120 chars)\\\",\\n  \\\"eh_breaking\\\": true/false\\n}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Avalie esta notícia:\\n\\nTÍTULO: {{ $json.titulo_original }}\\n\\nCONTEÚDO: {{ $json.conteudo_original?.slice(0, 2000) }}\\n\\nFONTE URL: {{ $json.url_original }}\"\n    }\n  ]\n}",
+        "options": { "timeout": 30000 }
+      }
+    },
+    {
+      "id": "parse-classificacao",
+      "name": "Parse resposta Claude",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1540, 200],
+      "parameters": {
+        "jsCode": "const item = $('loop-itens').item.json;\nlet claude;\n\ntry {\n  const texto = $input.item.json.content[0].text;\n  // Remover markdown se houver\n  const jsonStr = texto.replace(/```json\\n?|```/g, '').trim();\n  claude = JSON.parse(jsonStr);\n} catch(e) {\n  // Falha no parse — marcar como não relevante\n  return [{ json: {\n    item_id: item.id,\n    relevante: false,\n    motivo_rejeicao: 'Erro no parse da resposta Claude: ' + e.message,\n    ...item\n  }}];\n}\n\nreturn [{ json: {\n  // Dados originais\n  item_id:           item.id,\n  fonte_id:          item.fonte_id,\n  hash:              item.hash,\n  url_original:      item.url_original,\n  titulo_original:   item.titulo_original,\n  conteudo_original: item.conteudo_original,\n  // Classificação Claude\n  relevante:         claude.relevante,\n  score:             claude.score,\n  categoria:         claude.categoria || 'rumor',\n  motivo_rejeicao:   claude.motivo_rejeicao || null,\n  titulo_pt:         claude.titulo_pt || item.titulo_original,\n  resumo_pt:         claude.resumo_pt || '',\n  resumo_ia:         claude.resumo_ia || '',\n  eh_breaking:       claude.eh_breaking || false\n}}];"
+      }
+    },
+    {
+      "id": "e-relevante",
+      "name": "É relevante?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1760, 200],
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json.relevante }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "true" }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "claude-gerar-conteudo",
+      "name": "Claude: Gerar conteúdo completo PT-BR",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1980, 100],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "x-api-key", "value": "={{ $vars.ANTHROPIC_API_KEY }}" },
+            { "name": "anthropic-version", "value": "2023-06-01" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={\n  \"model\": \"claude-sonnet-4-6\",\n  \"max_tokens\": 3000,\n  \"system\": \"Você é um redator sênior de um site de notícias sobre GTA VI em português do Brasil. Escreve de forma clara, engajante e com autoridade. Tom: informativo mas empolgante, como um fã que entende muito do jogo.\\n\\nResponda SEMPRE em JSON puro sem markdown:\\n{\\n  \\\"titulo\\\": \\\"título otimizado SEO máx 80 chars\\\",\\n  \\\"resumo\\\": \\\"resumo de 1-2 frases direto ao ponto (máx 200 chars)\\\",\\n  \\\"resumo_ia\\\": \\\"resumo curtíssimo para caixa de IA no site (máx 120 chars)\\\",\\n  \\\"conteudo\\\": \\\"artigo completo em markdown PT-BR com 3-5 parágrafos. Use **negrito** para destaques. Inclua análise e contexto.\\\",\\n  \\\"slug\\\": \\\"slug-url-amigavel-sem-acentos-maximo-70-chars\\\"\\n}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Gere o artigo completo para esta notícia:\\n\\nTÍTULO ORIGINAL: {{ $json.titulo_original }}\\nRESUMO INICIAL: {{ $json.resumo_pt }}\\nCATEGORIA: {{ $json.categoria }}\\nCONTEÚDO FONTE: {{ $json.conteudo_original?.slice(0, 2500) }}\\nURL FONTE: {{ $json.url_original }}\"\n    }\n  ]\n}",
+        "options": { "timeout": 45000 }
+      }
+    },
+    {
+      "id": "parse-conteudo",
+      "name": "Parse conteúdo gerado",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2200, 100],
+      "parameters": {
+        "jsCode": "const classificacao = $('parse-classificacao').item.json;\nlet artigo;\n\ntry {\n  const texto = $input.item.json.content[0].text;\n  const jsonStr = texto.replace(/```json\\n?|```/g, '').trim();\n  artigo = JSON.parse(jsonStr);\n} catch(e) {\n  // Usar dados básicos se parse falhar\n  artigo = {\n    titulo:     classificacao.titulo_pt,\n    resumo:     classificacao.resumo_pt,\n    resumo_ia:  classificacao.resumo_ia,\n    conteudo:   classificacao.conteudo_original?.slice(0, 1000) || '',\n    slug:       classificacao.titulo_pt\n      .toLowerCase()\n      .normalize('NFD').replace(/[\\u0300-\\u036f]/g, '')\n      .replace(/[^a-z0-9\\s-]/g, '')\n      .trim()\n      .replace(/\\s+/g, '-')\n      .slice(0, 70)\n  };\n}\n\n// Garantir slug válido e único (com timestamp)\nconst slugBase = (artigo.slug || artigo.titulo || 'noticia')\n  .toLowerCase()\n  .normalize('NFD').replace(/[\\u0300-\\u036f]/g, '')\n  .replace(/[^a-z0-9\\s-]/g, '')\n  .trim()\n  .replace(/\\s+/g, '-')\n  .slice(0, 60);\n\nconst slug = slugBase + '-' + Date.now().toString(36);\n\n// Detectar imagem se possível (Unsplash temático)\nconst imagensGTA = [\n  'https://images.unsplash.com/photo-1542751371-adc38448a05e?w=800&q=80',\n  'https://images.unsplash.com/photo-1511512578047-dfb367046420?w=800&q=80',\n  'https://images.unsplash.com/photo-1560419015-7c427e8ae5ba?w=800&q=80',\n  'https://images.unsplash.com/photo-1477959858617-67f85cf4f1df?w=800&q=80',\n  'https://images.unsplash.com/photo-1558618666-fcd25c85cd64?w=800&q=80'\n];\nconst imagem = imagensGTA[Math.floor(Math.random() * imagensGTA.length)];\n\nreturn [{ json: {\n  // Dados para inserir na tabela noticias\n  slug,\n  titulo:          artigo.titulo   || classificacao.titulo_pt,\n  resumo:          artigo.resumo   || classificacao.resumo_pt,\n  resumo_ia:       artigo.resumo_ia || classificacao.resumo_ia,\n  conteudo:        artigo.conteudo || '',\n  categoria:       classificacao.categoria,\n  fonte:           classificacao.url_original ? new URL(classificacao.url_original).hostname.replace('www.','') : 'Desconhecida',\n  fonte_url:       classificacao.url_original,\n  imagem_url:      imagem,\n  destaque:        classificacao.eh_breaking || false,\n  publicado:       true,\n  agente_fonte:    'n8n',\n  agente_url:      classificacao.url_original,\n  agente_hash:     classificacao.hash,\n  // Para atualizar o item coletado\n  item_id:         classificacao.item_id\n}}];"
+      }
+    },
+    {
+      "id": "publicar-noticia",
+      "name": "Publicar notícia no Supabase",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2420, 100],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $vars.SUPABASE_URL }}/rest/v1/noticias",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "Prefer", "value": "return=representation" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={\n  \"slug\":        \"{{ $json.slug }}\",\n  \"titulo\":      {{ JSON.stringify($json.titulo) }},\n  \"resumo\":      {{ JSON.stringify($json.resumo) }},\n  \"resumo_ia\":   {{ JSON.stringify($json.resumo_ia) }},\n  \"conteudo\":    {{ JSON.stringify($json.conteudo) }},\n  \"categoria\":   \"{{ $json.categoria }}\",\n  \"fonte\":       \"{{ $json.fonte }}\",\n  \"fonte_url\":   \"{{ $json.fonte_url }}\",\n  \"imagem_url\":  \"{{ $json.imagem_url }}\",\n  \"destaque\":    {{ $json.destaque }},\n  \"publicado\":   true,\n  \"agente_fonte\": \"n8n-auto\",\n  \"agente_url\":  \"{{ $json.agente_url }}\",\n  \"agente_hash\": \"{{ $json.agente_hash }}\"\n}"
+      }
+    },
+    {
+      "id": "marcar-item-publicado",
+      "name": "Marcar item como publicado",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2640, 100],
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $vars.SUPABASE_URL }}/rest/v1/agent_itens_coletados",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "id", "value": "=eq.{{ $('parse-conteudo').item.json.item_id }}" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={\n  \"relevante\": true,\n  \"publicado\": true,\n  \"score_relevancia\": {{ $('parse-classificacao').item.json.score }},\n  \"categoria_sugerida\": \"{{ $('parse-classificacao').item.json.categoria }}\",\n  \"noticia_id\": \"{{ $input.item.json[0]?.id }}\"\n}"
+      }
+    },
+    {
+      "id": "agendar-whatsapp",
+      "name": "Criar job WhatsApp",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2860, 100],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $vars.SUPABASE_URL }}/rest/v1/agent_jobs",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={\n  \"tipo\": \"whatsapp\",\n  \"payload\": {\n    \"noticia_id\": \"{{ $('publicar-noticia').item.json[0]?.id }}\",\n    \"titulo\":     {{ JSON.stringify($('parse-conteudo').item.json.titulo) }},\n    \"resumo_ia\":  {{ JSON.stringify($('parse-conteudo').item.json.resumo_ia) }},\n    \"slug\":       \"{{ $('parse-conteudo').item.json.slug }}\",\n    \"categoria\":  \"{{ $('parse-conteudo').item.json.categoria }}\"\n  },\n  \"agendado_para\": \"{{ new Date(Date.now() + 2*60*1000).toISOString() }}\"\n}"
+      }
+    },
+    {
+      "id": "log-publicado",
+      "name": "Log: notícia publicada",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3080, 100],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $vars.SUPABASE_URL }}/rest/v1/agent_logs",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={\n  \"nivel\": \"info\",\n  \"mensagem\": \"✅ Notícia publicada: {{ $('parse-conteudo').item.json.titulo?.slice(0,80) }}\",\n  \"dados\": {\n    \"slug\":     \"{{ $('parse-conteudo').item.json.slug }}\",\n    \"categoria\": \"{{ $('parse-conteudo').item.json.categoria }}\",\n    \"score\":     {{ $('parse-classificacao').item.json.score }}\n  }\n}"
+      }
+    },
+    {
+      "id": "marcar-irrelevante",
+      "name": "Marcar item como irrelevante",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1980, 340],
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $vars.SUPABASE_URL }}/rest/v1/agent_itens_coletados",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "id", "value": "=eq.{{ $json.item_id }}" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={\n  \"relevante\": false,\n  \"score_relevancia\": {{ $json.score }},\n  \"motivo_rejeicao\": {{ JSON.stringify($json.motivo_rejeicao || 'Score baixo') }}\n}"
+      }
+    },
+    {
+      "id": "continuar-loop",
+      "name": "Continuar loop?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [3300, 200],
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $('loop-itens').context.noItemsLeft }}",
+              "rightValue": false,
+              "operator": { "type": "boolean", "operation": "false" }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "A cada 15 minutos": {
+      "main": [[{ "node": "Agente ativo?", "type": "main", "index": 0 }]]
+    },
+    "Agente ativo?": {
+      "main": [[{ "node": "Está ativo?", "type": "main", "index": 0 }]]
+    },
+    "Está ativo?": {
+      "main": [
+        [{ "node": "Buscar itens não classificados", "type": "main", "index": 0 }],
+        []
+      ]
+    },
+    "Buscar itens não classificados": {
+      "main": [[{ "node": "Tem itens para processar?", "type": "main", "index": 0 }]]
+    },
+    "Tem itens para processar?": {
+      "main": [
+        [{ "node": "Loop por item", "type": "main", "index": 0 }],
+        []
+      ]
+    },
+    "Loop por item": {
+      "main": [[{ "node": "Claude: Classificar relevância", "type": "main", "index": 0 }]]
+    },
+    "Claude: Classificar relevância": {
+      "main": [[{ "node": "Parse resposta Claude", "type": "main", "index": 0 }]]
+    },
+    "Parse resposta Claude": {
+      "main": [[{ "node": "É relevante?", "type": "main", "index": 0 }]]
+    },
+    "É relevante?": {
+      "main": [
+        [{ "node": "Claude: Gerar conteúdo completo PT-BR", "type": "main", "index": 0 }],
+        [{ "node": "Marcar item como irrelevante", "type": "main", "index": 0 }]
+      ]
+    },
+    "Claude: Gerar conteúdo completo PT-BR": {
+      "main": [[{ "node": "Parse conteúdo gerado", "type": "main", "index": 0 }]]
+    },
+    "Parse conteúdo gerado": {
+      "main": [[{ "node": "Publicar notícia no Supabase", "type": "main", "index": 0 }]]
+    },
+    "Publicar notícia no Supabase": {
+      "main": [[{ "node": "Marcar item como publicado", "type": "main", "index": 0 }]]
+    },
+    "Marcar item como publicado": {
+      "main": [[{ "node": "Criar job WhatsApp", "type": "main", "index": 0 }]]
+    },
+    "Criar job WhatsApp": {
+      "main": [[{ "node": "Log: notícia publicada", "type": "main", "index": 0 }]]
+    },
+    "Log: notícia publicada": {
+      "main": [[{ "node": "Continuar loop?", "type": "main", "index": 0 }]]
+    },
+    "Marcar item como irrelevante": {
+      "main": [[{ "node": "Continuar loop?", "type": "main", "index": 0 }]]
+    },
+    "Continuar loop?": {
+      "main": [
+        [{ "node": "Loop por item", "type": "main", "index": 0 }],
+        []
+      ]
+    }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1", "saveManualExecutions": true },
+  "tags": [{ "name": "gta6news" }, { "name": "ia" }, { "name": "classificador" }]
+}

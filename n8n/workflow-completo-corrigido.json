@@ -1,0 +1,1010 @@
+{
+  "name": "GTA6.NEWS — Agente Completo",
+  "nodes": [
+
+    {
+      "id": "sched-coletor",
+      "name": "A cada 30 minutos",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [-7456, 16],
+      "parameters": {
+        "rule": { "interval": [{ "field": "minutes", "minutesInterval": 30 }] }
+      }
+    },
+
+    {
+      "id": "buscar-fontes",
+      "name": "Buscar fontes ativas",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-7248, 16],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $vars.SUPABASE_URL }}/rest/v1/agent_fontes",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey",        "value": "={{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $vars.SUPABASE_SERVICE_KEY }}" }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "select", "value": "*" },
+            { "name": "ativo",  "value": "eq.true" },
+            { "name": "or",     "value": "(ultima_coleta.is.null,ultima_coleta.lt.{{ new Date(Date.now() - 25*60*1000).toISOString() }})" }
+          ]
+        },
+        "options": {}
+      }
+    },
+
+    {
+      "id": "loop-fonte",
+      "name": "Loop por fonte",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [-7040, 16],
+      "parameters": { "batchSize": 1, "options": {} }
+    },
+
+    {
+      "id": "switch-tipo",
+      "name": "Tipo da fonte?",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [-6816, -16],
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": { "conditions": [{ "leftValue": "={{ $json.tipo }}", "rightValue": "rss", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" },
+              "renameOutput": true, "outputKey": "RSS"
+            },
+            {
+              "conditions": { "conditions": [{ "leftValue": "={{ $json.tipo }}", "rightValue": "reddit", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" },
+              "renameOutput": true, "outputKey": "Reddit"
+            },
+            {
+              "conditions": { "conditions": [{ "leftValue": "={{ $json.tipo }}", "rightValue": "twitter", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" },
+              "renameOutput": true, "outputKey": "Twitter"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+
+    {
+      "id": "fetch-rss",
+      "name": "Fetch RSS",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-6592, -256],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.url }}",
+        "options": { "response": { "response": { "responseFormat": "text" } }, "timeout": 15000 }
+      }
+    },
+
+    {
+      "id": "parse-xml",
+      "name": "Parse XML RSS",
+      "type": "n8n-nodes-base.xml",
+      "typeVersion": 1,
+      "position": [-6368, -256],
+      "parameters": { "options": {} }
+    },
+
+    {
+      "id": "extrair-rss",
+      "name": "Extrair itens RSS",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-6160, -256],
+      "parameters": {
+        "jsCode": "const fonte = $('Loop por fonte').item.json;\nconst fonteId   = fonte.id;\nconst fonteNome = fonte.nome;\nconst palavras  = fonte.palavras_chave || [];\n\nlet items = [];\ntry {\n  const feed = $input.item.json;\n  const channel = feed.rss?.channel?.[0] || feed.feed || {};\n  const rawItems = channel.item || channel.entry || [];\n  items = Array.isArray(rawItems) ? rawItems : [rawItems];\n} catch(e) { return []; }\n\nconst resultado = [];\nfor (const item of items.slice(0, 20)) {\n  const titulo    = (item.title?.[0] || item.title || '').toString();\n  const link      = item.link?.[0] || item.link || item.id?.[0] || '';\n  const descricao = (item.description?.[0] || item.summary?.[0] || item.content?.[0] || '').toString();\n  const dataStr   = item.pubDate?.[0] || item.updated?.[0] || new Date().toISOString();\n  const urlStr    = typeof link === 'string' ? link : (link?._?.toString() || '');\n\n  const textoCompleto = (titulo + ' ' + descricao).toLowerCase();\n  const relevante = palavras.length === 0 || palavras.some(p => textoCompleto.includes(p.toLowerCase()));\n  if (!relevante) continue;\n\n  let hash = 0;\n  const hashInput = urlStr || titulo;\n  for (let i = 0; i < hashInput.length; i++) {\n    hash = ((hash << 5) - hash) + hashInput.charCodeAt(i);\n    hash = hash & hash;\n  }\n  const hashStr = Math.abs(hash).toString(16).padStart(8,'0') + '_' + hashInput.slice(-20).replace(/[^a-z0-9]/gi,'');\n\n  resultado.push({ json: {\n    fonte_id: fonteId, fonte_nome: fonteNome,\n    titulo_original: titulo.slice(0, 500),\n    conteudo_original: descricao.slice(0, 5000),\n    url_original: urlStr, hash: hashStr, data_original: dataStr\n  }});\n}\nreturn resultado;"
+      }
+    },
+
+    {
+      "id": "fetch-reddit",
+      "name": "Fetch Reddit JSON",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-6592, 0],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "User-Agent", "value": "GTA6NewsBot/1.0 (by /u/gta6newsbr)" }] },
+        "sendQuery": true,
+        "queryParameters": { "parameters": [{ "name": "limit", "value": "25" }, { "name": "sort", "value": "new" }] },
+        "options": { "timeout": 15000 }
+      }
+    },
+
+    {
+      "id": "extrair-reddit",
+      "name": "Extrair posts Reddit",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-6368, 0],
+      "parameters": {
+        "jsCode": "const fonte = $('Loop por fonte').item.json;\nconst fonteId   = fonte.id;\nconst fonteNome = fonte.nome;\nconst palavras  = fonte.palavras_chave || [];\nconst ultimoId  = fonte.ultimo_item_id || '';\n\nconst posts = $input.item.json?.data?.children || [];\nconst resultado = [];\n\nfor (const post of posts) {\n  const d = post.data;\n  if (!d || d.name === ultimoId) continue;\n  if (d.ups < 10) continue;\n  const texto = (d.title + ' ' + (d.selftext || '')).toLowerCase();\n  const relevante = palavras.length === 0 || palavras.some(p => texto.includes(p.toLowerCase()));\n  if (!relevante) continue;\n  resultado.push({ json: {\n    fonte_id: fonteId, fonte_nome: fonteNome,\n    titulo_original: d.title.slice(0, 500),\n    conteudo_original: (d.selftext || d.url || '').slice(0, 5000),\n    url_original: `https://reddit.com${d.permalink}`,\n    hash: 'reddit_' + d.id,\n    reddit_id: d.name, reddit_ups: d.ups,\n    data_original: new Date(d.created_utc * 1000).toISOString()\n  }});\n}\nreturn resultado.slice(0, 10);"
+      }
+    },
+
+    {
+      "id": "fetch-twitter",
+      "name": "Search Twitter/X via SerpAPI",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-6592, 160],
+      "parameters": {
+        "method": "GET",
+        "url": "https://serpapi.com/search",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "engine",  "value": "google" },
+            { "name": "q",       "value": "GTA 6 site:twitter.com OR site:x.com -filter:retweets" },
+            { "name": "num",     "value": "10" },
+            { "name": "tbs",     "value": "qdr:d" },
+            { "name": "api_key", "value": "={{ $vars.SERPAPI_KEY }}" }
+          ]
+        },
+        "options": {}
+      }
+    },
+
+    {
+      "id": "extrair-twitter",
+      "name": "Extrair resultados Twitter",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-6368, 160],
+      "parameters": {
+        "jsCode": "const fonte = $('Loop por fonte').item.json;\nconst results = $input.item.json?.organic_results || [];\nreturn results.slice(0, 8).map(r => ({ json: {\n  fonte_id: fonte.id, fonte_nome: fonte.nome,\n  titulo_original: r.title || '',\n  conteudo_original: r.snippet || '',\n  url_original: r.link || '',\n  hash: 'tw_' + (r.link || '').replace(/[^a-z0-9]/gi,'').slice(-30),\n  data_original: new Date().toISOString()\n}}));"
+      }
+    },
+
+    {
+      "id": "merge-itens",
+      "name": "Unificar todos os itens",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [-6160, -16],
+      "parameters": { "numberInputs": 3 }
+    },
+
+    {
+      "id": "check-duplicata",
+      "name": "Verificar duplicata no Supabase",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-5936, 0],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $vars.SUPABASE_URL }}/rest/v1/agent_itens_coletados",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey",        "value": "={{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $vars.SUPABASE_SERVICE_KEY }}" }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "select", "value": "id,hash" },
+            { "name": "hash",   "value": "=eq.{{ $json.hash }}" },
+            { "name": "limit",  "value": "1" }
+          ]
+        },
+        "options": {}
+      }
+    },
+
+    {
+      "id": "e-novo",
+      "name": "É novo?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-5712, 0],
+      "parameters": {
+        "conditions": {
+          "conditions": [{ "leftValue": "={{ $json.length }}", "rightValue": 0, "operator": { "type": "number", "operation": "equals" } }],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+
+    {
+      "id": "preparar-item",
+      "name": "Preparar item para inserção",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [-5504, -16],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "id": "1", "name": "fonte_id",          "value": "={{ $('Unificar todos os itens').item.json.fonte_id }}", "type": "string" },
+            { "id": "2", "name": "titulo_original",   "value": "={{ $('Unificar todos os itens').item.json.titulo_original }}", "type": "string" },
+            { "id": "3", "name": "conteudo_original", "value": "={{ $('Unificar todos os itens').item.json.conteudo_original }}", "type": "string" },
+            { "id": "4", "name": "url_original",      "value": "={{ $('Unificar todos os itens').item.json.url_original }}", "type": "string" },
+            { "id": "5", "name": "hash",              "value": "={{ $('Unificar todos os itens').item.json.hash }}", "type": "string" }
+          ]
+        },
+        "options": {}
+      }
+    },
+
+    {
+      "id": "inserir-item",
+      "name": "Inserir item coletado",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-5280, -16],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $vars.SUPABASE_URL }}/rest/v1/agent_itens_coletados",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey",        "value": "={{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Content-Type",  "value": "application/json" },
+            { "name": "Prefer",        "value": "return=minimal" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={{ JSON.stringify({ fonte_id: $json.fonte_id, titulo_original: $json.titulo_original, conteudo_original: $json.conteudo_original, url_original: $json.url_original, hash: $json.hash }) }}",
+        "options": {}
+      }
+    },
+
+    {
+      "id": "log-item",
+      "name": "Log: item coletado",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-5280, 192],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $vars.SUPABASE_URL }}/rest/v1/agent_logs",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey",        "value": "={{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Content-Type",  "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={{ JSON.stringify({ nivel: 'info', mensagem: 'Item coletado: ' + $('Preparar item para inserção').item.json.titulo_original.slice(0,80), dados: { fonte: $('Preparar item para inserção').item.json.fonte_id, hash: $('Preparar item para inserção').item.json.hash } }) }}",
+        "options": {}
+      }
+    },
+
+    {
+      "id": "atualizar-fonte",
+      "name": "Atualizar ultima_coleta da fonte",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-5504, 192],
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $vars.SUPABASE_URL }}/rest/v1/agent_fontes",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey",        "value": "={{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Content-Type",  "value": "application/json" }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [{ "name": "id", "value": "=eq.{{ $('Loop por fonte').item.json.id }}" }]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={{ JSON.stringify({ ultima_coleta: new Date().toISOString() }) }}",
+        "options": {}
+      }
+    },
+
+    {
+      "id": "sched-ia",
+      "name": "A cada 15 minutos",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [-7504, 528],
+      "parameters": {
+        "rule": { "interval": [{ "field": "minutes", "minutesInterval": 15 }] }
+      }
+    },
+
+    {
+      "id": "check-ativo",
+      "name": "Agente ativo?",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-7280, 528],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $vars.SUPABASE_URL }}/rest/v1/configuracoes",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey",        "value": "={{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $vars.SUPABASE_SERVICE_KEY }}" }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "select", "value": "chave,valor" },
+            { "name": "chave",  "value": "eq.agente_ativo" }
+          ]
+        },
+        "options": {}
+      }
+    },
+
+    {
+      "id": "esta-ativo",
+      "name": "Está ativo?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-7104, 528],
+      "parameters": {
+        "conditions": {
+          "conditions": [{ "leftValue": "={{ $json[0]?.valor }}", "rightValue": "true", "operator": { "type": "string", "operation": "equals" } }],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+
+    {
+      "id": "buscar-nao-class",
+      "name": "Buscar itens não classificados",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-6880, 512],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $vars.SUPABASE_URL }}/rest/v1/agent_itens_coletados",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey",        "value": "={{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $vars.SUPABASE_SERVICE_KEY }}" }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "select",    "value": "id,fonte_id,titulo_original,conteudo_original,url_original,hash" },
+            { "name": "relevante", "value": "is.null" },
+            { "name": "publicado", "value": "eq.false" },
+            { "name": "order",     "value": "coletado_em.asc" },
+            { "name": "limit",     "value": "5" }
+          ]
+        },
+        "options": {}
+      }
+    },
+
+    {
+      "id": "tem-itens",
+      "name": "Tem itens para processar?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-6656, 512],
+      "parameters": {
+        "conditions": {
+          "conditions": [{ "leftValue": "={{ $json.length }}", "rightValue": 0, "operator": { "type": "number", "operation": "larger" } }],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+
+    {
+      "id": "loop-item",
+      "name": "Loop por item",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [-6400, 496],
+      "parameters": { "batchSize": 1, "options": {} }
+    },
+
+    {
+      "id": "openai-classificar",
+      "name": "OpenAI: Classificar relevância",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-6160, 480],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{ $vars.OPENAI_API_KEY }}" },
+            { "name": "Content-Type",  "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={{ JSON.stringify({ model: 'gpt-4o-mini', temperature: 0.2, response_format: { type: 'json_object' }, messages: [ { role: 'system', content: 'Você é um editor especialista em GTA 6 e Rockstar Games. Avalie se a notícia é relevante para um site PT-BR sobre GTA VI.\\n\\nRELEVANTE (score>0.6): qualquer notícia sobre GTA 6, Rockstar, Vice City, Lucia/Jason, Leonida, trailers, leaks, GTA Online, pré-venda, datas.\\nNÃO RELEVANTE (score<0.4): outros jogos, memes sem info, spam.\\n\\nCATEGORIAS: oficial, leak, rumor, trailer, analise, online, breaking\\n\\nResponda APENAS JSON válido:\\n{\"relevante\":true,\"score\":0.0,\"categoria\":\"categoria\",\"motivo_rejeicao\":null,\"titulo_pt\":\"titulo em PT-BR\",\"resumo_pt\":\"resumo 1-2 frases PT-BR\",\"resumo_ia\":\"máx 120 chars para caixa IA do site\",\"eh_breaking\":false}' }, { role: 'user', content: 'TÍTULO: ' + $json.titulo_original + '\\n\\nCONTEÚDO: ' + ($json.conteudo_original || '').slice(0, 2000) + '\\n\\nFONTE: ' + $json.url_original } ] }) }}",
+        "options": { "timeout": 30000 }
+      }
+    },
+
+    {
+      "id": "parse-class",
+      "name": "Parse resposta OpenAI classificação",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-5952, 480],
+      "parameters": {
+        "jsCode": "const item = $('Loop por item').item.json;\nlet gpt;\ntry {\n  const texto = $input.item.json.choices[0].message.content;\n  gpt = JSON.parse(texto);\n} catch(e) {\n  return [{ json: { item_id: item.id, relevante: false, score: 0, motivo_rejeicao: 'Erro parse: ' + e.message, ...item } }];\n}\nreturn [{ json: {\n  item_id: item.id, fonte_id: item.fonte_id, hash: item.hash,\n  url_original: item.url_original, titulo_original: item.titulo_original,\n  conteudo_original: item.conteudo_original,\n  relevante: gpt.relevante, score: gpt.score,\n  categoria: gpt.categoria || 'rumor',\n  motivo_rejeicao: gpt.motivo_rejeicao || null,\n  titulo_pt: gpt.titulo_pt || item.titulo_original,\n  resumo_pt: gpt.resumo_pt || '',\n  resumo_ia: gpt.resumo_ia || '',\n  eh_breaking: gpt.eh_breaking || false\n}}];"
+      }
+    },
+
+    {
+      "id": "e-relevante",
+      "name": "É relevante?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-5728, 480],
+      "parameters": {
+        "conditions": {
+          "conditions": [{ "leftValue": "={{ $json.relevante }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true" } }],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+
+    {
+      "id": "openai-conteudo",
+      "name": "OpenAI: Gerar conteúdo PT-BR",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-5520, 464],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{ $vars.OPENAI_API_KEY }}" },
+            { "name": "Content-Type",  "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={{ JSON.stringify({ model: 'gpt-4o', temperature: 0.4, response_format: { type: 'json_object' }, messages: [ { role: 'system', content: 'Você é redator sênior de um site de notícias sobre GTA VI em PT-BR. Escreva de forma clara, empolgante e com autoridade de fã especialista.\\n\\nResponda APENAS JSON válido:\\n{\"titulo\":\"título SEO máx 80 chars\",\"resumo\":\"1-2 frases diretas máx 200 chars\",\"resumo_ia\":\"frase curtíssima para caixa IA máx 120 chars\",\"conteudo\":\"artigo completo markdown PT-BR 3-5 parágrafos com **negrito** nos destaques\",\"slug\":\"slug-url-sem-acentos-maximo-60-chars\"}' }, { role: 'user', content: 'TÍTULO: ' + $json.titulo_pt + '\\nRESUMO: ' + $json.resumo_pt + '\\nCATEGORIA: ' + $json.categoria + '\\nCONTEÚDO FONTE: ' + ($json.conteudo_original || '').slice(0, 2500) + '\\nURL: ' + $json.url_original } ] }) }}",
+        "options": { "timeout": 45000 }
+      }
+    },
+
+    {
+      "id": "parse-conteudo",
+      "name": "Parse conteúdo gerado",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-5296, 464],
+      "parameters": {
+        "jsCode": "const cls = $('Parse resposta OpenAI classificação').item.json;\nlet art;\ntry {\n  art = JSON.parse($input.item.json.choices[0].message.content);\n} catch(e) {\n  art = { titulo: cls.titulo_pt, resumo: cls.resumo_pt, resumo_ia: cls.resumo_ia, conteudo: cls.conteudo_original?.slice(0,1000)||'', slug: '' };\n}\n\nconst slugBase = (art.slug || art.titulo || 'noticia')\n  .toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g,'')\n  .replace(/[^a-z0-9\\s-]/g,'').trim().replace(/\\s+/g,'-').slice(0,55);\nconst slug = slugBase + '-' + Date.now().toString(36);\n\nconst imgs = [\n  'https://images.unsplash.com/photo-1542751371-adc38448a05e?w=800&q=80',\n  'https://images.unsplash.com/photo-1511512578047-dfb367046420?w=800&q=80',\n  'https://images.unsplash.com/photo-1560419015-7c427e8ae5ba?w=800&q=80',\n  'https://images.unsplash.com/photo-1477959858617-67f85cf4f1df?w=800&q=80'\n];\n\nlet host = 'Desconhecida';\ntry { host = new URL(cls.url_original).hostname.replace('www.',''); } catch(e){}\n\nreturn [{ json: {\n  slug, item_id: cls.item_id,\n  titulo:    art.titulo   || cls.titulo_pt,\n  resumo:    art.resumo   || cls.resumo_pt,\n  resumo_ia: art.resumo_ia || cls.resumo_ia,\n  conteudo:  art.conteudo || '',\n  categoria: cls.categoria,\n  fonte: host, fonte_url: cls.url_original,\n  imagem_url: imgs[Math.floor(Math.random()*imgs.length)],\n  destaque: cls.eh_breaking || false,\n  publicado: true,\n  agente_fonte: 'n8n-openai',\n  agente_url: cls.url_original,\n  agente_hash: cls.hash\n}}];"
+      }
+    },
+
+    {
+      "id": "publicar-noticia",
+      "name": "Publicar notícia no Supabase",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-5088, 464],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $vars.SUPABASE_URL }}/rest/v1/noticias",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey",        "value": "={{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Content-Type",  "value": "application/json" },
+            { "name": "Prefer",        "value": "return=representation" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={{ JSON.stringify({ slug: $json.slug, titulo: $json.titulo, resumo: $json.resumo, resumo_ia: $json.resumo_ia, conteudo: $json.conteudo, categoria: $json.categoria, fonte: $json.fonte, fonte_url: $json.fonte_url, imagem_url: $json.imagem_url, destaque: $json.destaque, publicado: true, agente_fonte: $json.agente_fonte, agente_url: $json.agente_url, agente_hash: $json.agente_hash }) }}",
+        "options": {}
+      }
+    },
+
+    {
+      "id": "marcar-publicado",
+      "name": "Marcar item como publicado",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-4864, 464],
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $vars.SUPABASE_URL }}/rest/v1/agent_itens_coletados",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey",        "value": "={{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Content-Type",  "value": "application/json" }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [{ "name": "id", "value": "=eq.{{ $('Parse conteúdo gerado').item.json.item_id }}" }]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={{ JSON.stringify({ relevante: true, publicado: true, score_relevancia: $('Parse resposta OpenAI classificação').item.json.score, categoria_sugerida: $('Parse resposta OpenAI classificação').item.json.categoria, noticia_id: $('Publicar notícia no Supabase').item.json[0]?.id || null }) }}",
+        "options": {}
+      }
+    },
+
+    {
+      "id": "criar-job-wa",
+      "name": "Criar job WhatsApp",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-4640, 464],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $vars.SUPABASE_URL }}/rest/v1/agent_jobs",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey",        "value": "={{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Content-Type",  "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={{ JSON.stringify({ tipo: 'whatsapp', payload: { noticia_id: $('Publicar notícia no Supabase').item.json[0]?.id, titulo: $('Parse conteúdo gerado').item.json.titulo, resumo_ia: $('Parse conteúdo gerado').item.json.resumo_ia, slug: $('Parse conteúdo gerado').item.json.slug, categoria: $('Parse conteúdo gerado').item.json.categoria }, agendado_para: new Date(Date.now() + 2*60*1000).toISOString() }) }}",
+        "options": {}
+      }
+    },
+
+    {
+      "id": "log-publicado",
+      "name": "Log: notícia publicada",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-4416, 464],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $vars.SUPABASE_URL }}/rest/v1/agent_logs",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey",        "value": "={{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Content-Type",  "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={{ JSON.stringify({ nivel: 'info', mensagem: '✅ Publicado: ' + $('Parse conteúdo gerado').item.json.titulo.slice(0,80), dados: { slug: $('Parse conteúdo gerado').item.json.slug, categoria: $('Parse conteúdo gerado').item.json.categoria } }) }}",
+        "options": {}
+      }
+    },
+
+    {
+      "id": "marcar-irrelevante",
+      "name": "Marcar item como irrelevante",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-5520, 688],
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $vars.SUPABASE_URL }}/rest/v1/agent_itens_coletados",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey",        "value": "={{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Content-Type",  "value": "application/json" }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [{ "name": "id", "value": "=eq.{{ $json.item_id }}" }]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={{ JSON.stringify({ relevante: false, score_relevancia: $json.score, motivo_rejeicao: $json.motivo_rejeicao || 'Score baixo' }) }}",
+        "options": {}
+      }
+    },
+
+    {
+      "id": "continuar-loop",
+      "name": "Continuar loop?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-4416, 688],
+      "parameters": {
+        "conditions": {
+          "conditions": [{ "leftValue": "={{ $('Loop por item').context.noItemsLeft }}", "rightValue": false, "operator": { "type": "boolean", "operation": "false" } }],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+
+    {
+      "id": "sched-wa",
+      "name": "A cada 5 minutos",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [-7504, 992],
+      "parameters": {
+        "rule": { "interval": [{ "field": "minutes", "minutesInterval": 5 }] }
+      }
+    },
+
+    {
+      "id": "buscar-jobs-wa",
+      "name": "Buscar jobs WhatsApp pendentes",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-7296, 992],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $vars.SUPABASE_URL }}/rest/v1/agent_jobs",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey",        "value": "={{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $vars.SUPABASE_SERVICE_KEY }}" }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "select",        "value": "*" },
+            { "name": "tipo",          "value": "eq.whatsapp" },
+            { "name": "status",        "value": "eq.pendente" },
+            { "name": "agendado_para", "value": "lte.{{ new Date().toISOString() }}" },
+            { "name": "order",         "value": "agendado_para.asc" },
+            { "name": "limit",         "value": "3" }
+          ]
+        },
+        "options": {}
+      }
+    },
+
+    {
+      "id": "tem-jobs",
+      "name": "Tem jobs para enviar?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-7072, 992],
+      "parameters": {
+        "conditions": {
+          "conditions": [{ "leftValue": "={{ $json.length }}", "rightValue": 0, "operator": { "type": "number", "operation": "larger" } }],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+
+    {
+      "id": "loop-job",
+      "name": "Loop por job",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [-6816, 976],
+      "parameters": { "batchSize": 1, "options": {} }
+    },
+
+    {
+      "id": "marcar-proc",
+      "name": "Marcar job como processando",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-6592, 960],
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $vars.SUPABASE_URL }}/rest/v1/agent_jobs",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey",        "value": "={{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Content-Type",  "value": "application/json" }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [{ "name": "id", "value": "=eq.{{ $json.id }}" }]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={{ JSON.stringify({ status: 'processando', iniciado_em: new Date().toISOString(), tentativas: ($json.tentativas || 0) + 1 }) }}",
+        "options": {}
+      }
+    },
+
+    {
+      "id": "formatar-msg",
+      "name": "Formatar mensagem WhatsApp",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-6384, 960],
+      "parameters": {
+        "jsCode": "const job = $('Loop por job').item.json;\nconst p = job.payload;\n\nconst emojis = { oficial:'✅', leak:'🕵️', rumor:'❓', trailer:'🎬', analise:'🔍', online:'🎮', breaking:'🔴' };\nconst emoji = emojis[p.categoria] || '📰';\nconst siteUrl = $vars.SITE_URL || 'https://gta6.news';\n\nconst mensagem = [\n  `${emoji} *${p.titulo}*`,\n  '',\n  `🤖 _${p.resumo_ia}_`,\n  '',\n  `🔗 ${siteUrl}/noticias/${p.slug}`,\n  '',\n  '_GTA6.NEWS — Atualizado em tempo real_'\n].join('\\n');\n\nreturn [{ json: {\n  job_id: job.id, noticia_id: p.noticia_id,\n  mensagem, categoria: p.categoria, titulo: p.titulo, slug: p.slug\n}}];"
+      }
+    },
+
+    {
+      "id": "buscar-grupos",
+      "name": "Buscar grupos ativos",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-6160, 960],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $vars.UAZAPI_URL }}/group/list",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "token",        "value": "={{ $vars.UAZAPI_TOKEN }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "options": {}
+      }
+    },
+
+    {
+      "id": "filtrar-grupos",
+      "name": "Filtrar grupos GTA6",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-5936, 960],
+      "parameters": {
+        "jsCode": "const raw = $input.item.json;\nconst grupos = Array.isArray(raw) ? raw : (raw?.groups || raw?.data || []);\nconst nome = $vars.WHATSAPP_GRUPO_NOME || 'GTA';\n\nconst filtrados = grupos.filter(g => (g.name || g.subject || '').toLowerCase().includes(nome.toLowerCase()));\nconst finais = filtrados.length > 0 ? filtrados : [{ id: $vars.WHATSAPP_GRUPO_ID, name: 'Grupo GTA6' }];\n\nconst msg = $('Formatar mensagem WhatsApp').item.json;\nreturn finais.map(g => ({ json: {\n  grupo_id: g.id || g.remoteJid, grupo_nome: g.name || g.subject,\n  mensagem: msg.mensagem, noticia_id: msg.noticia_id, job_id: msg.job_id\n}}));"
+      }
+    },
+
+    {
+      "id": "enviar-wa",
+      "name": "Enviar mensagem no grupo",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-5712, 960],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $vars.UAZAPI_URL }}/message/sendText",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "token",        "value": "={{ $vars.UAZAPI_TOKEN }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={{ JSON.stringify({ number: $json.grupo_id, text: $json.mensagem, delay: 1000 }) }}",
+        "options": { "timeout": 15000 }
+      }
+    },
+
+    {
+      "id": "registrar-envio",
+      "name": "Registrar envio no Supabase",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-5504, 960],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $vars.SUPABASE_URL }}/rest/v1/whatsapp_envios",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey",        "value": "={{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Content-Type",  "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={{ JSON.stringify({ noticia_id: $('Filtrar grupos GTA6').item.json.noticia_id, canal: 'grupo_principal', numero_grupo: $('Filtrar grupos GTA6').item.json.grupo_id, mensagem: $('Filtrar grupos GTA6').item.json.mensagem, status: 'enviado', enviado_em: new Date().toISOString() }) }}",
+        "options": {}
+      }
+    },
+
+    {
+      "id": "marcar-noticia-enviada",
+      "name": "Marcar notícia como enviada",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-5280, 960],
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $vars.SUPABASE_URL }}/rest/v1/noticias",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey",        "value": "={{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Content-Type",  "value": "application/json" }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [{ "name": "id", "value": "=eq.{{ $('Filtrar grupos GTA6').item.json.noticia_id }}" }]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={{ JSON.stringify({ whatsapp_enviado: true, whatsapp_enviado_em: new Date().toISOString() }) }}",
+        "options": {}
+      }
+    },
+
+    {
+      "id": "fechar-job",
+      "name": "Fechar job como concluído",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-5056, 960],
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $vars.SUPABASE_URL }}/rest/v1/agent_jobs",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey",        "value": "={{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Content-Type",  "value": "application/json" }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [{ "name": "id", "value": "=eq.{{ $('Loop por job').item.json.id }}" }]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={{ JSON.stringify({ status: 'concluido', concluido_em: new Date().toISOString(), resultado: { grupos_enviados: 1 } }) }}",
+        "options": {}
+      }
+    },
+
+    {
+      "id": "log-wa",
+      "name": "Log: WhatsApp enviado",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-4832, 960],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $vars.SUPABASE_URL }}/rest/v1/agent_logs",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey",        "value": "={{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Content-Type",  "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={{ JSON.stringify({ nivel: 'info', mensagem: '📱 WhatsApp enviado para ' + $('Filtrar grupos GTA6').item.json.grupo_nome, dados: { noticia_id: $('Filtrar grupos GTA6').item.json.noticia_id } }) }}",
+        "options": {}
+      }
+    },
+
+    {
+      "id": "mais-jobs",
+      "name": "Mais jobs?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-4624, 976],
+      "parameters": {
+        "conditions": {
+          "conditions": [{ "leftValue": "={{ $('Loop por job').context.noItemsLeft }}", "rightValue": false, "operator": { "type": "boolean", "operation": "false" } }],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    }
+
+  ],
+
+  "connections": {
+    "A cada 30 minutos":              { "main": [[{ "node": "Buscar fontes ativas",           "type": "main", "index": 0 }]] },
+    "Buscar fontes ativas":           { "main": [[{ "node": "Loop por fonte",                 "type": "main", "index": 0 }]] },
+    "Loop por fonte":                 { "main": [[{ "node": "Tipo da fonte?",                 "type": "main", "index": 0 }]] },
+    "Tipo da fonte?": {
+      "main": [
+        [{ "node": "Fetch RSS",                     "type": "main", "index": 0 }],
+        [{ "node": "Fetch Reddit JSON",             "type": "main", "index": 0 }],
+        [{ "node": "Search Twitter/X via SerpAPI",  "type": "main", "index": 0 }]
+      ]
+    },
+    "Fetch RSS":                      { "main": [[{ "node": "Parse XML RSS",                  "type": "main", "index": 0 }]] },
+    "Parse XML RSS":                  { "main": [[{ "node": "Extrair itens RSS",              "type": "main", "index": 0 }]] },
+    "Extrair itens RSS":              { "main": [[{ "node": "Unificar todos os itens",        "type": "main", "index": 0 }]] },
+    "Fetch Reddit JSON":              { "main": [[{ "node": "Extrair posts Reddit",           "type": "main", "index": 0 }]] },
+    "Extrair posts Reddit":           { "main": [[{ "node": "Unificar todos os itens",        "type": "main", "index": 1 }]] },
+    "Search Twitter/X via SerpAPI":   { "main": [[{ "node": "Extrair resultados Twitter",    "type": "main", "index": 0 }]] },
+    "Extrair resultados Twitter":     { "main": [[{ "node": "Unificar todos os itens",        "type": "main", "index": 2 }]] },
+    "Unificar todos os itens":        { "main": [[{ "node": "Verificar duplicata no Supabase","type": "main", "index": 0 }]] },
+    "Verificar duplicata no Supabase":{ "main": [[{ "node": "É novo?",                       "type": "main", "index": 0 }]] },
+    "É novo?": {
+      "main": [
+        [{ "node": "Preparar item para inserção",   "type": "main", "index": 0 }],
+        [{ "node": "Atualizar ultima_coleta da fonte","type": "main", "index": 0 }]
+      ]
+    },
+    "Preparar item para inserção":    { "main": [[{ "node": "Inserir item coletado",          "type": "main", "index": 0 }]] },
+    "Inserir item coletado":          { "main": [[{ "node": "Log: item coletado",             "type": "main", "index": 0 }]] },
+    "Log: item coletado":             { "main": [[{ "node": "Atualizar ultima_coleta da fonte","type": "main", "index": 0 }]] },
+    "Atualizar ultima_coleta da fonte":{ "main": [[{ "node": "Loop por fonte",               "type": "main", "index": 0 }]] },
+
+    "A cada 15 minutos":              { "main": [[{ "node": "Agente ativo?",                  "type": "main", "index": 0 }]] },
+    "Agente ativo?":                  { "main": [[{ "node": "Está ativo?",                    "type": "main", "index": 0 }]] },
+    "Está ativo?":                    { "main": [[{ "node": "Buscar itens não classificados", "type": "main", "index": 0 }], []] },
+    "Buscar itens não classificados": { "main": [[{ "node": "Tem itens para processar?",     "type": "main", "index": 0 }]] },
+    "Tem itens para processar?":      { "main": [[{ "node": "Loop por item",                  "type": "main", "index": 0 }], []] },
+    "Loop por item":                  { "main": [[{ "node": "OpenAI: Classificar relevância", "type": "main", "index": 0 }]] },
+    "OpenAI: Classificar relevância": { "main": [[{ "node": "Parse resposta OpenAI classificação","type": "main", "index": 0 }]] },
+    "Parse resposta OpenAI classificação":{ "main": [[{ "node": "É relevante?",              "type": "main", "index": 0 }]] },
+    "É relevante?": {
+      "main": [
+        [{ "node": "OpenAI: Gerar conteúdo PT-BR",  "type": "main", "index": 0 }],
+        [{ "node": "Marcar item como irrelevante",  "type": "main", "index": 0 }]
+      ]
+    },
+    "OpenAI: Gerar conteúdo PT-BR":   { "main": [[{ "node": "Parse conteúdo gerado",         "type": "main", "index": 0 }]] },
+    "Parse conteúdo gerado":          { "main": [[{ "node": "Publicar notícia no Supabase",   "type": "main", "index": 0 }]] },
+    "Publicar notícia no Supabase":   { "main": [[{ "node": "Marcar item como publicado",     "type": "main", "index": 0 }]] },
+    "Marcar item como publicado":     { "main": [[{ "node": "Criar job WhatsApp",             "type": "main", "index": 0 }]] },
+    "Criar job WhatsApp":             { "main": [[{ "node": "Log: notícia publicada",         "type": "main", "index": 0 }]] },
+    "Log: notícia publicada":         { "main": [[{ "node": "Continuar loop?",                "type": "main", "index": 0 }]] },
+    "Marcar item como irrelevante":   { "main": [[{ "node": "Continuar loop?",                "type": "main", "index": 0 }]] },
+    "Continuar loop?":                { "main": [[{ "node": "Loop por item",                  "type": "main", "index": 0 }], []] },
+
+    "A cada 5 minutos":               { "main": [[{ "node": "Buscar jobs WhatsApp pendentes", "type": "main", "index": 0 }]] },
+    "Buscar jobs WhatsApp pendentes": { "main": [[{ "node": "Tem jobs para enviar?",          "type": "main", "index": 0 }]] },
+    "Tem jobs para enviar?":          { "main": [[{ "node": "Loop por job",                   "type": "main", "index": 0 }], []] },
+    "Loop por job":                   { "main": [[{ "node": "Marcar job como processando",    "type": "main", "index": 0 }]] },
+    "Marcar job como processando":    { "main": [[{ "node": "Formatar mensagem WhatsApp",     "type": "main", "index": 0 }]] },
+    "Formatar mensagem WhatsApp":     { "main": [[{ "node": "Buscar grupos ativos",           "type": "main", "index": 0 }]] },
+    "Buscar grupos ativos":           { "main": [[{ "node": "Filtrar grupos GTA6",            "type": "main", "index": 0 }]] },
+    "Filtrar grupos GTA6":            { "main": [[{ "node": "Enviar mensagem no grupo",       "type": "main", "index": 0 }]] },
+    "Enviar mensagem no grupo":       { "main": [[{ "node": "Registrar envio no Supabase",    "type": "main", "index": 0 }]] },
+    "Registrar envio no Supabase":    { "main": [[{ "node": "Marcar notícia como enviada",    "type": "main", "index": 0 }]] },
+    "Marcar notícia como enviada":    { "main": [[{ "node": "Fechar job como concluído",      "type": "main", "index": 0 }]] },
+    "Fechar job como concluído":      { "main": [[{ "node": "Log: WhatsApp enviado",          "type": "main", "index": 0 }]] },
+    "Log: WhatsApp enviado":          { "main": [[{ "node": "Mais jobs?",                     "type": "main", "index": 0 }]] },
+    "Mais jobs?":                     { "main": [[{ "node": "Loop por job",                   "type": "main", "index": 0 }], []] }
+  },
+
+  "active": false,
+  "settings": { "executionOrder": "v1", "saveManualExecutions": true }
+}

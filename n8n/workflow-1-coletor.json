@@ -1,0 +1,409 @@
+{
+  "name": "GTA6.NEWS — 1. Coletor de Fontes",
+  "nodes": [
+    {
+      "id": "schedule-trigger",
+      "name": "A cada 30 minutos",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 300],
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "minutes", "minutesInterval": 30 }]
+        }
+      }
+    },
+    {
+      "id": "get-fontes-ativas",
+      "name": "Buscar fontes ativas",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [220, 300],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $vars.SUPABASE_URL }}/rest/v1/agent_fontes",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $vars.SUPABASE_SERVICE_KEY }}" }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "select", "value": "*" },
+            { "name": "ativo", "value": "eq.true" },
+            { "name": "or", "value": "(ultima_coleta.is.null,ultima_coleta.lt.{{ new Date(Date.now() - 25*60*1000).toISOString() }})" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "split-fontes",
+      "name": "Loop por fonte",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [440, 300],
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      }
+    },
+    {
+      "id": "router-tipo",
+      "name": "Tipo da fonte?",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [660, 300],
+      "parameters": {
+        "mode": "rules",
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": { "caseSensitive": false },
+                "conditions": [{ "leftValue": "={{ $json.tipo }}", "rightValue": "rss", "operator": { "type": "string", "operation": "equals" } }]
+              },
+              "renameOutput": true,
+              "outputKey": "RSS"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": false },
+                "conditions": [{ "leftValue": "={{ $json.tipo }}", "rightValue": "reddit", "operator": { "type": "string", "operation": "equals" } }]
+              },
+              "renameOutput": true,
+              "outputKey": "Reddit"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": false },
+                "conditions": [{ "leftValue": "={{ $json.tipo }}", "rightValue": "twitter", "operator": { "type": "string", "operation": "equals" } }]
+              },
+              "renameOutput": true,
+              "outputKey": "Twitter"
+            }
+          ]
+        },
+        "fallbackOutput": "extra"
+      }
+    },
+    {
+      "id": "fetch-rss",
+      "name": "Fetch RSS",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [880, 120],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.url }}",
+        "options": {
+          "timeout": 15000,
+          "response": { "response": { "responseFormat": "text" } }
+        }
+      }
+    },
+    {
+      "id": "parse-rss-xml",
+      "name": "Parse XML RSS",
+      "type": "n8n-nodes-base.xml",
+      "typeVersion": 1,
+      "position": [1100, 120],
+      "parameters": {
+        "operation": "parse",
+        "data": "={{ $json.data }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "extrair-itens-rss",
+      "name": "Extrair itens RSS",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1320, 120],
+      "parameters": {
+        "jsCode": "const fonteId   = $('split-fontes').item.json.id;\nconst fonteNome = $('split-fontes').item.json.nome;\nconst palavras  = $('split-fontes').item.json.palavras_chave || [];\n\n// Pegar itens do feed (RSS 2.0 ou Atom)\nlet items = [];\ntry {\n  const feed = $input.item.json;\n  const channel = feed.rss?.channel?.[0] || feed.feed || {};\n  const rawItems = channel.item || channel.entry || [];\n  items = Array.isArray(rawItems) ? rawItems : [rawItems];\n} catch(e) {\n  return [];\n}\n\n// Filtrar por palavras-chave e normalizar\nconst resultado = [];\nfor (const item of items.slice(0, 20)) {\n  const titulo   = item.title?.[0] || item.title || '';\n  const link     = item.link?.[0]  || item.link  || item.id?.[0] || '';\n  const descricao = item.description?.[0] || item.summary?.[0] || item.content?.[0] || '';\n  const dataStr  = item.pubDate?.[0] || item.updated?.[0] || new Date().toISOString();\n\n  // Filtro por palavras-chave\n  const textoCompleto = (titulo + ' ' + descricao).toLowerCase();\n  const relevante = palavras.length === 0 || palavras.some(p => textoCompleto.includes(p.toLowerCase()));\n  if (!relevante) continue;\n\n  // Hash SHA-256 simulado (determinístico por URL)\n  const urlStr = typeof link === 'string' ? link : link?._?.toString() || '';\n  const hashInput = urlStr || titulo;\n  let hash = 0;\n  for (let i = 0; i < hashInput.length; i++) {\n    const char = hashInput.charCodeAt(i);\n    hash = ((hash << 5) - hash) + char;\n    hash = hash & hash;\n  }\n  const hashStr = Math.abs(hash).toString(16).padStart(8, '0') + '_' + hashInput.slice(-20).replace(/[^a-z0-9]/gi,'');\n\n  resultado.push({\n    fonte_id:          fonteId,\n    fonte_nome:        fonteNome,\n    titulo_original:   titulo.toString().slice(0, 500),\n    conteudo_original: descricao.toString().slice(0, 5000),\n    url_original:      urlStr,\n    hash:              hashStr,\n    data_original:     dataStr\n  });\n}\n\nreturn resultado.map(r => ({ json: r }));"
+      }
+    },
+    {
+      "id": "fetch-reddit",
+      "name": "Fetch Reddit JSON",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [880, 300],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "User-Agent", "value": "GTA6NewsBot/1.0 (by /u/gta6newsbr)" }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "limit", "value": "25" },
+            { "name": "sort", "value": "new" }
+          ]
+        },
+        "options": { "timeout": 15000 }
+      }
+    },
+    {
+      "id": "extrair-itens-reddit",
+      "name": "Extrair posts Reddit",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1100, 300],
+      "parameters": {
+        "jsCode": "const fonteId   = $('split-fontes').item.json.id;\nconst fonteNome = $('split-fontes').item.json.nome;\nconst palavras  = $('split-fontes').item.json.palavras_chave || [];\nconst ultimoId  = $('split-fontes').item.json.ultimo_item_id || '';\n\nconst posts = $input.item.json?.data?.children || [];\nconst resultado = [];\n\nfor (const post of posts) {\n  const d = post.data;\n  if (!d) continue;\n  \n  // Pular posts já processados\n  if (d.name === ultimoId) break;\n  \n  // Filtro: não processar posts com menos de 10 upvotes\n  if (d.ups < 10) continue;\n\n  // Filtro por palavras-chave\n  const texto = (d.title + ' ' + (d.selftext || '')).toLowerCase();\n  const relevante = palavras.length === 0 || palavras.some(p => texto.includes(p.toLowerCase()));\n  if (!relevante) continue;\n\n  const url = `https://reddit.com${d.permalink}`;\n  let hash = 0;\n  for (let i = 0; i < d.id.length; i++) {\n    const c = d.id.charCodeAt(i);\n    hash = ((hash << 5) - hash) + c;\n    hash = hash & hash;\n  }\n  const hashStr = 'reddit_' + d.id;\n\n  resultado.push({\n    fonte_id:          fonteId,\n    fonte_nome:        fonteNome,\n    titulo_original:   d.title.slice(0, 500),\n    conteudo_original: (d.selftext || d.url || '').slice(0, 5000),\n    url_original:      url,\n    hash:              hashStr,\n    reddit_id:         d.name,\n    reddit_ups:        d.ups,\n    reddit_flair:      d.link_flair_text || '',\n    data_original:     new Date(d.created_utc * 1000).toISOString()\n  });\n}\n\nreturn resultado.slice(0, 10).map(r => ({ json: r }));"
+      }
+    },
+    {
+      "id": "fetch-twitter-search",
+      "name": "Search Twitter/X via SerpAPI",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [880, 480],
+      "parameters": {
+        "method": "GET",
+        "url": "https://serpapi.com/search",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "engine", "value": "google" },
+            { "name": "q", "value": "GTA 6 site:twitter.com OR site:x.com -filter:retweets" },
+            { "name": "num", "value": "10" },
+            { "name": "tbs", "value": "qdr:d" },
+            { "name": "api_key", "value": "={{ $vars.SERPAPI_KEY }}" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "extrair-itens-twitter",
+      "name": "Extrair resultados Twitter",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1100, 480],
+      "parameters": {
+        "jsCode": "const fonteId   = $('split-fontes').item.json.id;\nconst fonteNome = $('split-fontes').item.json.nome;\nconst results   = $input.item.json?.organic_results || [];\n\nreturn results.slice(0, 8).map(r => ({\n  json: {\n    fonte_id:          fonteId,\n    fonte_nome:        fonteNome,\n    titulo_original:   r.title || '',\n    conteudo_original: r.snippet || '',\n    url_original:      r.link || '',\n    hash:              'tw_' + (r.link || '').replace(/[^a-z0-9]/gi,'').slice(-30),\n    data_original:     new Date().toISOString()\n  }\n}));"
+      }
+    },
+    {
+      "id": "merge-todos",
+      "name": "Unificar todos os itens",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [1540, 300],
+      "parameters": {
+        "mode": "append",
+        "options": {}
+      }
+    },
+    {
+      "id": "verificar-duplicata",
+      "name": "Verificar duplicata no Supabase",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1760, 300],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $vars.SUPABASE_URL }}/rest/v1/agent_itens_coletados",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $vars.SUPABASE_SERVICE_KEY }}" }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "select", "value": "id,hash" },
+            { "name": "hash", "value": "=eq.{{ $json.hash }}" },
+            { "name": "limit", "value": "1" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "e-novo",
+      "name": "É novo?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1980, 300],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "cond-novo",
+              "leftValue": "={{ $json.length }}",
+              "rightValue": 0,
+              "operator": { "type": "number", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "preparar-item",
+      "name": "Preparar item para inserção",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [2200, 200],
+      "parameters": {
+        "mode": "manual",
+        "duplicateItem": false,
+        "assignments": {
+          "assignments": [
+            { "id": "1", "name": "fonte_id", "value": "={{ $('verificar-duplicata').item.json.fonte_id ?? $('merge-todos').item.json.fonte_id }}", "type": "string" },
+            { "id": "2", "name": "titulo_original", "value": "={{ $('merge-todos').item.json.titulo_original }}", "type": "string" },
+            { "id": "3", "name": "conteudo_original", "value": "={{ $('merge-todos').item.json.conteudo_original }}", "type": "string" },
+            { "id": "4", "name": "url_original", "value": "={{ $('merge-todos').item.json.url_original }}", "type": "string" },
+            { "id": "5", "name": "hash", "value": "={{ $('merge-todos').item.json.hash }}", "type": "string" }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "inserir-item",
+      "name": "Inserir item coletado",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2420, 200],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $vars.SUPABASE_URL }}/rest/v1/agent_itens_coletados",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "Prefer", "value": "return=representation" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={{ JSON.stringify($json) }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "log-sucesso",
+      "name": "Log: item coletado",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2640, 200],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $vars.SUPABASE_URL }}/rest/v1/agent_logs",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={ \"nivel\": \"info\", \"mensagem\": \"Item coletado: {{ $('merge-todos').item.json.titulo_original.slice(0,80) }}\", \"dados\": { \"fonte\": \"{{ $('merge-todos').item.json.fonte_nome }}\", \"hash\": \"{{ $('merge-todos').item.json.hash }}\" } }"
+      }
+    },
+    {
+      "id": "atualizar-fonte",
+      "name": "Atualizar ultima_coleta da fonte",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2200, 420],
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $vars.SUPABASE_URL }}/rest/v1/agent_fontes",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $vars.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "id", "value": "=eq.{{ $('split-fontes').item.json.id }}" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={ \"ultima_coleta\": \"{{ new Date().toISOString() }}\" }"
+      }
+    }
+  ],
+  "connections": {
+    "A cada 30 minutos": {
+      "main": [[{ "node": "Buscar fontes ativas", "type": "main", "index": 0 }]]
+    },
+    "Buscar fontes ativas": {
+      "main": [[{ "node": "Loop por fonte", "type": "main", "index": 0 }]]
+    },
+    "Loop por fonte": {
+      "main": [[{ "node": "Tipo da fonte?", "type": "main", "index": 0 }]]
+    },
+    "Tipo da fonte?": {
+      "main": [
+        [{ "node": "Fetch RSS", "type": "main", "index": 0 }],
+        [{ "node": "Fetch Reddit JSON", "type": "main", "index": 0 }],
+        [{ "node": "Search Twitter/X via SerpAPI", "type": "main", "index": 0 }]
+      ]
+    },
+    "Fetch RSS": {
+      "main": [[{ "node": "Parse XML RSS", "type": "main", "index": 0 }]]
+    },
+    "Parse XML RSS": {
+      "main": [[{ "node": "Extrair itens RSS", "type": "main", "index": 0 }]]
+    },
+    "Extrair itens RSS": {
+      "main": [[{ "node": "Unificar todos os itens", "type": "main", "index": 0 }]]
+    },
+    "Fetch Reddit JSON": {
+      "main": [[{ "node": "Extrair posts Reddit", "type": "main", "index": 0 }]]
+    },
+    "Extrair posts Reddit": {
+      "main": [[{ "node": "Unificar todos os itens", "type": "main", "index": 1 }]]
+    },
+    "Search Twitter/X via SerpAPI": {
+      "main": [[{ "node": "Extrair resultados Twitter", "type": "main", "index": 0 }]]
+    },
+    "Extrair resultados Twitter": {
+      "main": [[{ "node": "Unificar todos os itens", "type": "main", "index": 2 }]]
+    },
+    "Unificar todos os itens": {
+      "main": [[{ "node": "Verificar duplicata no Supabase", "type": "main", "index": 0 }]]
+    },
+    "Verificar duplicata no Supabase": {
+      "main": [[{ "node": "É novo?", "type": "main", "index": 0 }]]
+    },
+    "É novo?": {
+      "main": [
+        [{ "node": "Preparar item para inserção", "type": "main", "index": 0 }],
+        [{ "node": "Atualizar ultima_coleta da fonte", "type": "main", "index": 0 }]
+      ]
+    },
+    "Preparar item para inserção": {
+      "main": [[{ "node": "Inserir item coletado", "type": "main", "index": 0 }]]
+    },
+    "Inserir item coletado": {
+      "main": [[{ "node": "Log: item coletado", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1", "saveManualExecutions": true, "callerPolicy": "workflowsFromSameOwner" },
+  "tags": [{ "name": "gta6news" }, { "name": "coletor" }]
+}
