@@ -2,7 +2,15 @@
 
 import Link from "next/link";
 import Image from "next/image";
-import { Noticia, categoriaConfig } from "@/lib/mock-data";
+import { useState } from "react";
+import { categoriaConfig } from "@/lib/mock-data";
+
+const FALLBACK_IMGS = [
+  "https://images.unsplash.com/photo-1542751371-adc38448a05e?w=800&q=80",
+  "https://images.unsplash.com/photo-1511512578047-dfb367046420?w=800&q=80",
+  "https://images.unsplash.com/photo-1493711662062-fa541adb3fc8?w=800&q=80",
+  "https://images.unsplash.com/photo-1560419015-7c427e8ae5ba?w=800&q=80",
+];
 
 function timeAgo(dateStr: string) {
   const diff = Date.now() - new Date(dateStr).getTime();
@@ -14,84 +22,75 @@ function timeAgo(dateStr: string) {
 }
 
 function formatViews(n: number) {
+  if (!n) return "0";
+  if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`;
   if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
   return String(n);
 }
 
-export default function NewsCard({ noticia, size = "normal" }: { noticia: Noticia; size?: "normal" | "large" }) {
-  const cat = categoriaConfig[noticia.categoria];
+export default function NewsCard({ noticia, size = "normal" }: { noticia: any; size?: "normal" | "large" }) {
+  const [imgSrc, setImgSrc] = useState(
+    noticia.imagem_url || FALLBACK_IMGS[Math.abs(noticia.titulo?.charCodeAt(0) || 0) % FALLBACK_IMGS.length]
+  );
+  const [hovered, setHovered] = useState(false);
+
+  const cat = categoriaConfig[noticia.categoria as keyof typeof categoriaConfig] || categoriaConfig.rumor;
   const isLarge = size === "large";
 
   return (
-    <Link href={`/noticias/${noticia.slug}`} style={{ display: "block", textDecoration: "none" }}>
+    <Link href={`/noticias/${noticia.slug}`} style={{ display: "block", textDecoration: "none", height: "100%" }}>
       <div
         style={{
-          background: "#111",
-          borderRadius: 10,
+          background: "#0f0f18",
+          borderRadius: 12,
           overflow: "hidden",
-          border: "1px solid #1a1a1a",
-          transition: "border-color 0.2s, transform 0.2s",
+          border: `1px solid ${hovered ? "#826092" : "#1a1a2e"}`,
+          transition: "all 0.25s ease",
           cursor: "pointer",
           height: "100%",
+          transform: hovered ? "translateY(-3px)" : "translateY(0)",
+          boxShadow: hovered ? "0 8px 30px rgba(130,96,146,0.2)" : "none",
         }}
-        onMouseEnter={(e) => {
-          (e.currentTarget as HTMLElement).style.borderColor = "#826092";
-          (e.currentTarget as HTMLElement).style.transform = "translateY(-2px)";
-        }}
-        onMouseLeave={(e) => {
-          (e.currentTarget as HTMLElement).style.borderColor = "#1a1a1a";
-          (e.currentTarget as HTMLElement).style.transform = "translateY(0)";
-        }}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
       >
         {/* Imagem */}
-        <div style={{ position: "relative", height: isLarge ? 240 : 180 }}>
+        <div style={{ position: "relative", height: isLarge ? 260 : 190 }}>
           <Image
-            src={noticia.imagem}
+            src={imgSrc}
             alt={noticia.titulo}
             fill
-            style={{ objectFit: "cover" }}
+            style={{ objectFit: "cover", transition: "transform 0.4s ease", transform: hovered ? "scale(1.03)" : "scale(1)" }}
             unoptimized
+            onError={() => setImgSrc(FALLBACK_IMGS[0])}
           />
-          <div style={{ position: "absolute", inset: 0, background: "linear-gradient(to bottom, transparent 40%, #111 100%)" }} />
-          {/* Badge categoria */}
+          {/* Gradient overlay */}
+          <div style={{
+            position: "absolute", inset: 0,
+            background: "linear-gradient(to bottom, rgba(0,0,0,0.1) 0%, transparent 40%, rgba(10,0,20,0.9) 100%)"
+          }} />
+          {/* Badges */}
           <div style={{ position: "absolute", top: 10, left: 10 }}>
             <span style={{
-              background: cat.bg,
-              color: cat.color,
-              border: `1px solid ${cat.color}55`,
-              fontSize: 9,
-              fontWeight: 800,
-              letterSpacing: 1.5,
-              padding: "3px 8px",
-              borderRadius: 4,
-            }}>
-              {cat.label}
-            </span>
+              background: cat.bg, color: cat.color, border: `1px solid ${cat.color}66`,
+              fontSize: 9, fontWeight: 800, letterSpacing: 1.5, padding: "3px 8px", borderRadius: 4,
+            }}>{cat.label}</span>
           </div>
-          {/* Badge NOVO */}
           <div style={{ position: "absolute", top: 10, right: 10 }}>
-            <span style={{ background: "#E39986", color: "#000", fontSize: 9, fontWeight: 800, padding: "3px 8px", borderRadius: 4 }}>
-              NOVO
-            </span>
+            <span style={{ background: "#E39986", color: "#000", fontSize: 9, fontWeight: 800, padding: "3px 8px", borderRadius: 4 }}>NOVO</span>
           </div>
         </div>
 
         {/* Conteúdo */}
         <div style={{ padding: isLarge ? "16px 18px" : "12px 14px" }}>
-          <h3 style={{
-            color: "#fff",
-            fontSize: isLarge ? 16 : 13,
-            fontWeight: 800,
-            lineHeight: 1.4,
-            marginBottom: 8,
-          }}>
+          <h3 style={{ color: "#fff", fontSize: isLarge ? 16 : 13, fontWeight: 800, lineHeight: 1.4, marginBottom: 8 }}>
             {noticia.titulo}
           </h3>
 
-          {isLarge && (
-            <div style={{ background: "#E3998615", border: "1px solid #E3998633", borderRadius: 6, padding: "8px 10px", marginBottom: 10 }}>
-              <span style={{ color: "#E39986", fontSize: 10, fontWeight: 700 }}>🤖 IA: </span>
-              <span style={{ color: "#aaa", fontSize: 11 }}>{noticia.resumo_ia}</span>
+          {isLarge && noticia.resumo_ia && (
+            <div style={{ background: "rgba(227,153,134,0.08)", border: "1px solid rgba(227,153,134,0.2)", borderRadius: 6, padding: "7px 10px", marginBottom: 10 }}>
+              <span style={{ color: "#E39986", fontSize: 10, fontWeight: 700 }}>🤖 </span>
+              <span style={{ color: "#999", fontSize: 11 }}>{noticia.resumo_ia}</span>
             </div>
           )}
 
