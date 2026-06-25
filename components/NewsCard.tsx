@@ -5,7 +5,7 @@ import Image from "next/image";
 import { useState } from "react";
 import { categoriaConfig } from "@/lib/mock-data";
 
-const FALLBACK_IMGS = [
+const FALLBACK = [
   "https://images.unsplash.com/photo-1542751371-adc38448a05e?w=800&q=80",
   "https://images.unsplash.com/photo-1511512578047-dfb367046420?w=800&q=80",
   "https://images.unsplash.com/photo-1493711662062-fa541adb3fc8?w=800&q=80",
@@ -21,82 +21,78 @@ function timeAgo(dateStr: string) {
   return `há ${Math.floor(h / 24)}d`;
 }
 
-function formatViews(n: number) {
-  if (!n) return "0";
-  if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`;
-  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+function fmtViews(n: number) {
+  if (!n) return "";
+  if (n >= 1e6) return `${(n/1e6).toFixed(1)}M`;
+  if (n >= 1e3) return `${(n/1e3).toFixed(1)}k`;
   return String(n);
 }
 
 export default function NewsCard({ noticia, size = "normal" }: { noticia: any; size?: "normal" | "large" }) {
-  const [imgSrc, setImgSrc] = useState(
-    noticia.imagem_url || FALLBACK_IMGS[Math.abs(noticia.titulo?.charCodeAt(0) || 0) % FALLBACK_IMGS.length]
-  );
-  const [hovered, setHovered] = useState(false);
+  const fallback = FALLBACK[Math.abs((noticia.titulo?.charCodeAt(0) || 0)) % FALLBACK.length];
+  const [imgSrc, setImgSrc] = useState(noticia.imagem_url || fallback);
+  const [pressed, setPressed] = useState(false);
 
   const cat = categoriaConfig[noticia.categoria as keyof typeof categoriaConfig] || categoriaConfig.rumor;
-  const isLarge = size === "large";
 
   return (
-    <Link href={`/noticias/${noticia.slug}`} style={{ display: "block", textDecoration: "none", height: "100%" }}>
+    <Link href={`/noticias/${noticia.slug}`} style={{ display: "block", height: "100%" }}>
       <div
+        className="news-card-wrap"
         style={{
-          background: "#0f0f18",
-          borderRadius: 12,
-          overflow: "hidden",
-          border: `1px solid ${hovered ? "#826092" : "#1a1a2e"}`,
-          transition: "all 0.25s ease",
-          cursor: "pointer",
+          background: "linear-gradient(180deg, #0f0f1e 0%, #080814 100%)",
+          borderRadius: 14, overflow: "hidden",
+          border: `1px solid ${pressed ? "#826092" : "rgba(130,96,146,0.2)"}`,
           height: "100%",
-          transform: hovered ? "translateY(-3px)" : "translateY(0)",
-          boxShadow: hovered ? "0 8px 30px rgba(130,96,146,0.2)" : "none",
+          transform: pressed ? "scale(0.98)" : "scale(1)",
+          transition: "all 0.2s ease",
+          boxShadow: pressed ? "0 4px 20px rgba(130,96,146,0.2)" : "none",
         }}
-        onMouseEnter={() => setHovered(true)}
-        onMouseLeave={() => setHovered(false)}
+        onMouseDown={() => setPressed(true)}
+        onMouseUp={() => setPressed(false)}
+        onMouseLeave={() => setPressed(false)}
+        onTouchStart={() => setPressed(true)}
+        onTouchEnd={() => setPressed(false)}
       >
         {/* Imagem */}
-        <div style={{ position: "relative", height: isLarge ? 260 : 190 }}>
+        <div style={{ position: "relative", height: size === "large" ? 240 : 180, overflow: "hidden" }}>
           <Image
             src={imgSrc}
             alt={noticia.titulo}
             fill
-            style={{ objectFit: "cover", transition: "transform 0.4s ease", transform: hovered ? "scale(1.03)" : "scale(1)" }}
+            style={{ objectFit: "cover", transform: pressed ? "scale(1.04)" : "scale(1)", transition: "transform 0.4s ease" }}
             unoptimized
-            onError={() => setImgSrc(FALLBACK_IMGS[0])}
+            onError={() => setImgSrc(fallback)}
           />
-          {/* Gradient overlay */}
-          <div style={{
-            position: "absolute", inset: 0,
-            background: "linear-gradient(to bottom, rgba(0,0,0,0.1) 0%, transparent 40%, rgba(10,0,20,0.9) 100%)"
-          }} />
+          <div style={{ position: "absolute", inset: 0, background: "linear-gradient(to bottom, rgba(0,0,0,0.05) 0%, transparent 40%, rgba(8,8,20,0.92) 100%)" }} />
+
           {/* Badges */}
-          <div style={{ position: "absolute", top: 10, left: 10 }}>
-            <span style={{
-              background: cat.bg, color: cat.color, border: `1px solid ${cat.color}66`,
-              fontSize: 9, fontWeight: 800, letterSpacing: 1.5, padding: "3px 8px", borderRadius: 4,
-            }}>{cat.label}</span>
+          <div style={{ position: "absolute", top: 10, left: 10, display: "flex", gap: 5 }}>
+            <span style={{ background: cat.bg, color: cat.color, border: `1px solid ${cat.color}55`, fontSize: 8, fontWeight: 800, letterSpacing: 1.2, padding: "3px 8px", borderRadius: 4 }}>
+              {cat.label}
+            </span>
           </div>
-          <div style={{ position: "absolute", top: 10, right: 10 }}>
-            <span style={{ background: "#E39986", color: "#000", fontSize: 9, fontWeight: 800, padding: "3px 8px", borderRadius: 4 }}>NOVO</span>
-          </div>
+          <span style={{ position: "absolute", top: 10, right: 10, background: "#E39986", color: "#000", fontSize: 8, fontWeight: 800, padding: "3px 7px", borderRadius: 4 }}>
+            NOVO
+          </span>
         </div>
 
-        {/* Conteúdo */}
-        <div style={{ padding: isLarge ? "16px 18px" : "12px 14px" }}>
-          <h3 style={{ color: "#fff", fontSize: isLarge ? 16 : 13, fontWeight: 800, lineHeight: 1.4, marginBottom: 8 }}>
+        {/* Texto */}
+        <div style={{ padding: "12px 14px" }}>
+          <h3 style={{ color: "#f0f0f0", fontSize: size === "large" ? 15 : 13, fontWeight: 800, lineHeight: 1.4, marginBottom: 8 }}>
             {noticia.titulo}
           </h3>
 
-          {isLarge && noticia.resumo_ia && (
-            <div style={{ background: "rgba(227,153,134,0.08)", border: "1px solid rgba(227,153,134,0.2)", borderRadius: 6, padding: "7px 10px", marginBottom: 10 }}>
-              <span style={{ color: "#E39986", fontSize: 10, fontWeight: 700 }}>🤖 </span>
-              <span style={{ color: "#999", fontSize: 11 }}>{noticia.resumo_ia}</span>
+          {size === "large" && noticia.resumo_ia && (
+            <div style={{ background: "rgba(227,153,134,0.07)", border: "1px solid rgba(227,153,134,0.2)", borderRadius: 6, padding: "6px 9px", marginBottom: 8 }}>
+              <span style={{ color: "#E39986", fontSize: 9, fontWeight: 700 }}>🤖 </span>
+              <span style={{ color: "#888", fontSize: 11, lineHeight: 1.4 }}>{noticia.resumo_ia}</span>
             </div>
           )}
 
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <span style={{ color: "#555", fontSize: 10 }}>{timeAgo(noticia.criado_em)}</span>
-            <span style={{ color: "#444", fontSize: 10 }}>👁 {formatViews(noticia.views)}</span>
+            {noticia.views > 0 && <span style={{ color: "#444", fontSize: 10 }}>👁 {fmtViews(noticia.views)}</span>}
           </div>
         </div>
       </div>
