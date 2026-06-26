@@ -103,7 +103,14 @@ a { color: inherit; text-decoration: none; }
   gap: 20px;
 }
 @media (max-width: 900px) {
-  .hero-grid { grid-template-columns: 1fr; }
+  .hero-grid {
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+  /* No mobile o sidebar do hero vem embaixo mas mostra só o countdown */
+  .hero-grid > div:last-child > div:last-child {
+    display: none;
+  }
 }
 
 /* Section header */
